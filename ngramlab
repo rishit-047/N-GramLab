@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+
+import argparse
+import sys
+import numpy as np
+
+from parse_trace import parse_trace
+from ngram_builder import build_ngrams
+from fingerprint import build_bitvector, build_topk
+from compare import jaccard_bitvector, hamming_similarity
+
+def build_print(fp_file, tokens_file=None, n=3, bv_len=1024, k=5, terminal=False):
+
+    if tokens_file:
+        tokens = parse_trace(tokens_file)
+    else:
+        tokens = parse_trace(fp_file)
+
+    if not tokens:
+        print("[ERROR] No syscalls found in the input file")
+        sys.exit(1)
+
+    ngrams = build_ngrams(tokens, n)
+    bitvector = build_bitvector(ngrams, bv_len)
+    topk = build_topk(ngrams, k)
+
+    if terminal:
+        print(f"\nTop-{k} n-grams for {fp_file}:")
+        for ng, count in topk:
+            print(f"{ng} -> {count}")
+        print(f"Vector length: {len(bitvector)}, Active bits: {bitvector.sum()}")
+
+    return bitvector, topk
+
+def main():
+    
+    parser = argparse.ArgumentParser(
+        description="Behavioral Fingerprint Generator (Syscall-based)"
+    )
+    
+    parser.add_argument("-o", "--output", help="Output path file to save the results")
+
+    parser.add_argument("-i", "--input", help="Path to the syscall trace file (.log / .trace)")
+
+    parser.add_argument(
+        "-k",
+        type=int,
+        default=5,
+        help="Number of top n-grams to display (default: 5)"
+    )
+
+    parser.add_argument(
+        "-n",
+        type=int,
+        default=3,
+        help="Size of n-grams (default: 3)"
+    )
+
+    parser.add_argument(
+        "-t",
+        action="store_true",
+        help="Display output in terminal"
+    )
+
+    parser.add_argument(
+        "-bv",
+        type=int,
+        default=1024,
+        help="Size of the bitvector (default: 1024)"
+    )
+
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("FILE1, FILE2"),
+        help="Compare two trace files"
+    )
+
+    args =parser.parse_args()
+
+    if args.compare:
+        file1, file2 = args.compare
+        bv1, topk1 = build_print(file1, n=args.n, bv_len=args.bv, k=args.k, terminal=args.t)
+        bv2, topk2 = build_print(file2, n=args.n, bv_len=args.bv, k=args.k, terminal=args.t)
+
+        # Compute similarities
+        jaccard = jaccard_bitvector(bv1, bv2)
+        hamming = hamming_similarity(bv1, bv2)
+
+        print("\n=== Comparison ===")
+        print(f"Jaccard similarity: {jaccard:.3f}")
+        print(f"Hamming similarity: {hamming:.3f}")
+
+        # Top-K overlap
+        ngrams1 = {tuple(ng[0]): ng[1] for ng in topk1}
+        ngrams2 = {tuple(ng[0]): ng[1] for ng in topk2}
+
+        common = set(ngrams1.keys()) & set(ngrams2.keys())
+        diff = set(ngrams1.keys()) ^ set(ngrams2.keys())
+
+        print(f"\nTop matching n-grams ({len(common)}):")
+        for ng in common:
+            print(f"{ng} -> counts: {ngrams1[ng]} / {ngrams2[ng]}")
+
+        print(f"\nTop differing n-grams ({len(diff)}):")
+        for ng in diff:
+            print(f"{ng} -> counts: {ngrams1.get(ng,0)} / {ngrams2.get(ng,0)}")
+
+    else:
+        # Step 1: Parse stscall trace
+        tokens = parse_trace(args.input)
+        if not tokens:
+            print("[ERROR] No syscalls found in the input file")
+            sys.exit(1)
+
+        # Step 2: Built n-grams
+        ngrams = build_ngrams(tokens, args.n)
+
+        # Step 3: Build bitvector 
+        bitvector = build_bitvector(ngrams, args.bv)
+
+        # Step 4: Extract top-k n-grams
+        topk = build_topk(ngrams, args.k)
+
+        # Step 5: Write output to file
+        with open(args.output, "w") as f:
+            f.write("Top-k characteristic n-grams\n")
+            f.write("--------------------------------- \n")
+            for ng, count in topk:
+                f.write(f"{ng} -> {count}\n")   
+
+            f.write("\n Fingerprint Summary\n")
+            f.write("-------------------------")
+            f.write(f"\nVector Length: {len(bitvector)} bits\n")
+            f.write(f"Active Bits: {int(bitvector.sum())}\n")
+
+        if args.t:
+            print("\nTop-k characteristic n-grams:")
+            print("-----------------------------------")
+            for ng, count in topk:
+                print(f"{ng} -> {count}")
+
+            print(f"\nVector Length: {len(bitvector)} bits")
+            print(f"Active bits: {bitvector.sum()}")
+
+
+if __name__ == "__main__":
+    main()
